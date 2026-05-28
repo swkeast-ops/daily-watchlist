@@ -1,7 +1,7 @@
 import os
 import requests
 import akshare as ak
-import google.generativeai as genai
+import google.genai as genai
 
 # ------------------
 # Load environment secrets
@@ -14,42 +14,54 @@ STOCK_LIST = os.getenv("STOCK_LIST")
 stock_list = [x.strip() for x in STOCK_LIST.split(",")]
 
 # ------------------
-# Gemini AI setup
+# Gemini AI setup (新版)
 # ------------------
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash-latest")
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ------------------
-# Get stock data
+# Get stock data (改用更稳定的接口)
 # ------------------
 def get_stock_info(symbol):
     try:
-        df = ak.stock_hk_spot(symbol=symbol.replace(".HK", ""))
-        name = df.iloc[0]["股票名称"]
-        price = df.iloc[0]["最新价"]
-        change = df.iloc[0]["涨跌幅"]
-        return {"code": symbol, "name": name, "price": price, "change": change}
-    except:
+        # 把 0001.HK 转成 0001 的格式
+        code = symbol.replace(".HK", "")
+        df = ak.stock_hk_spot_em()
+        row = df[df["代码"] == code]
+        if not row.empty:
+            name = row["名称"].values[0]
+            price = row["最新价"].values[0]
+            change = row["涨跌幅"].values[0]
+            return {"code": symbol, "name": name, "price": price, "change": change}
+        else:
+            return {"code": symbol, "name": "N/A", "price": "N/A", "change": "N/A"}
+    except Exception as e:
+        print(f"获取 {symbol} 数据失败: {e}")
         return {"code": symbol, "name": "N/A", "price": "N/A", "change": "N/A"}
 
 # ------------------
-# AI analysis
+# AI analysis (新版调用方式)
 # ------------------
 def ai_analysis(stock):
+    if stock["price"] == "N/A":
+        return "数据获取失败，无法分析"
     prompt = f"""
-    Analyze this Hong Kong stock:
-    Code: {stock['code']}
-    Name: {stock['name']}
-    Price: {stock['price']}
-    Change: {stock['change']}
+    分析这只港股：
+    代码: {stock['code']}
+    名称: {stock['name']}
+    最新价: {stock['price']}
+    涨跌幅: {stock['change']}%
 
-    Give a short 1-line comment.
+    用一句话给出简短的市场解读。
     """
     try:
-        res = model.generate_content(prompt)
-        return res.text.strip()
-    except:
-        return "AI analysis unavailable"
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception as e:
+        print(f"AI分析失败: {e}")
+        return "AI分析暂时不可用"
 
 # ------------------
 # Send Telegram
@@ -59,20 +71,20 @@ def send_telegram(message):
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, data=data, timeout=10)
-    except:
-        print("Telegram send failed")
+    except Exception as e:
+        print(f"Telegram推送失败: {e}")
 
 # ------------------
 # Main report
 # ------------------
-report = "📊 HK Stock Watchlist Report\n\n"
+report = "📊 港股观察名单报告\n\n"
 
 for code in stock_list:
     stock = get_stock_info(code)
     comment = ai_analysis(stock)
-    report += f"🔹 {code} | {stock['name']}\nPrice: {stock['price']} | Change: {stock['change']}\nComment: {comment}\n\n"
+    report += f"🔹 {code} | {stock['name']}\n价格: {stock['price']} | 涨跌幅: {stock['change']}%\n解读: {comment}\n\n"
 
-report += "⚠️ AI for reference only, not investment advice."
+report += "⚠️ AI分析仅供参考，不构成投资建议。"
 
 print(report)
 send_telegram(report)
