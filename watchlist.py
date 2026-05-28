@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import google.genai as genai
 from google.genai import types
+from datetime import datetime
 
 # ------------------
 # Load environment secrets
@@ -203,10 +204,10 @@ def get_all_stock_data():
                 "beta": "N/A",
                 "turnover": "N/A",
                 "fifty_two_week_position": "N/A",
-                "macd": "N/A", "macd_signal": "N/A", "macd_crossover": "N/A",
-                "rsi": "N/A", "bollinger_position": "N/A",
-                "ma5": "N/A", "ma20": "N/A", "ma60": "N/A", "trend": "N/A",
-                "volume_change_pct": "N/A", "volume_ratio": "N/A", "atr": "N/A"
+                "macd": "N/A", 'macd_signal': "N/A", 'macd_crossover': "N/A",
+                'rsi': "N/A", 'bollinger_position': "N/A",
+                'ma5': "N/A", 'ma20': "N/A", 'ma60': "N/A", 'trend': "N/A",
+                'volume_change_pct': "N/A", 'volume_ratio': "N/A", 'atr': "N/A"
             })
     return all_data
 
@@ -233,8 +234,12 @@ def generate_python_analysis(all_stocks):
     high_volume = [s for s in valid_stocks if s["volume_change_pct"] != "N/A" and s["volume_change_pct"] > 100]
     high_dividend = [s for s in valid_stocks if s["dividend_yield"] != "N/A" and s["dividend_yield"] > 5]
     
+    # 获取当前日期
+    today = datetime.now().strftime("%Y年%m月%d日")
+    
     # 生成报告
-    report = "📊 港股观察名单报告（智能分析版）\n\n"
+    report = f"📊 港股观察名单报告（智能分析版）\n\n"
+    report += f"📅 日期: {today}\n\n"
     
     # 市场概览
     report += "📈 市场概览\n"
@@ -306,6 +311,9 @@ def generate_full_report(all_stocks):
     top_gainers = sorted_stocks[:5]
     top_losers = sorted_stocks[-5:]
     
+    # 获取当前日期
+    today = datetime.now().strftime("%Y年%m月%d日")
+    
     # 准备数据表格（只保留AI分析最需要的核心指标）
     data_table = "代码 | 名称 | 涨跌幅% | PE | PB | 股息率% | ROE% | RSI | 趋势 | 成交量变化%\n"
     data_table += "---|---|---|---|---|---|---|---|---|---\n"
@@ -323,6 +331,7 @@ def generate_full_report(all_stocks):
     4.  如果数据不足或不确定，明确标注"数据不足，无法分析"
     5.  不得给出任何投资建议，只做客观描述和分析
     6.  语言简洁，重点突出，适合在手机上阅读
+    7.  报告日期是: {today}
 
     【指标解读参考】
     - PE: 市盈率，越低估值越低
@@ -358,20 +367,55 @@ def generate_full_report(all_stocks):
         return generate_python_analysis(all_stocks)
 
 # ------------------
-# Send Telegram
+# 改进版Telegram发送函数（自动分块+完整错误日志）
 # ------------------
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
-    }
-    try:
-        requests.post(url, data=data, timeout=10)
-    except Exception as e:
-        print(f"Telegram推送失败: {e}")
+    # Telegram单条消息最大长度4096字符，留200字符余量
+    MAX_CHUNK_SIZE = 3800
+    
+    # 自动分块
+    chunks = []
+    while len(message) > MAX_CHUNK_SIZE:
+        # 找最近的换行符分割，避免把一句话拆成两半
+        split_index = message.rfind("\n", 0, MAX_CHUNK_SIZE)
+        if split_index == -1:
+            split_index = MAX_CHUNK_SIZE
+        chunks.append(message[:split_index])
+        message = message[split_index:]
+    chunks.append(message)
+    
+    print(f"📤 报告分为 {len(chunks)} 条消息发送")
+    
+    for i, chunk in enumerate(chunks):
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": chunk,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True
+        }
+        
+        try:
+            response = requests.post(url, data=data, timeout=15)
+            response.raise_for_status()
+            print(f"✅ 第 {i+1}/{len(chunks)} 条消息发送成功")
+            # 每条消息之间间隔1秒，避免触发Telegram频率限制
+            time.sleep(1)
+        except Exception as e:
+            print(f"❌ 第 {i+1}/{len(chunks)} 条消息发送失败 (Markdown): {e}")
+            print(f"响应内容: {response.text if 'response' in locals() else '无响应'}")
+            
+            # 如果Markdown失败，尝试用纯文本发送
+            print("🔄 尝试用纯文本发送...")
+            data["parse_mode"] = None
+            try:
+                response = requests.post(url, data=data, timeout=15)
+                response.raise_for_status()
+                print(f"✅ 第 {i+1}/{len(chunks)} 条消息发送成功 (纯文本)")
+                time.sleep(1)
+            except Exception as e2:
+                print(f"❌ 纯文本发送也失败: {e2}")
+                print(f"响应内容: {response.text if 'response' in locals() else '无响应'}")
 
 # ------------------
 # Main
