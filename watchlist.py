@@ -1,6 +1,6 @@
 import os
 import requests
-import akshare as ak
+import yfinance as yf
 import google.genai as genai
 
 # ------------------
@@ -14,32 +14,35 @@ STOCK_LIST = os.getenv("STOCK_LIST")
 stock_list = [x.strip() for x in STOCK_LIST.split(",")]
 
 # ------------------
-# Gemini AI setup (新版)
+# Gemini AI setup
 # ------------------
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ------------------
-# Get stock data (改用更稳定的接口)
+# Get stock data with yfinance (稳定版本)
 # ------------------
 def get_stock_info(symbol):
     try:
-        # 把 0001.HK 转成 0001 的格式
-        code = symbol.replace(".HK", "")
-        df = ak.stock_hk_spot_em()
-        row = df[df["代码"] == code]
-        if not row.empty:
-            name = row["名称"].values[0]
-            price = row["最新价"].values[0]
-            change = row["涨跌幅"].values[0]
-            return {"code": symbol, "name": name, "price": price, "change": change}
+        # 把 0001.HK 转换成 yfinance 支持的格式
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
+        
+        name = info.get("longName", "N/A")
+        price = info.get("regularMarketPrice", "N/A")
+        prev_close = info.get("previousClose", "N/A")
+        
+        if price != "N/A" and prev_close != "N/A":
+            change_pct = round((price - prev_close) / prev_close * 100, 2)
         else:
-            return {"code": symbol, "name": "N/A", "price": "N/A", "change": "N/A"}
+            change_pct = "N/A"
+        
+        return {"code": symbol, "name": name, "price": price, "change": change_pct}
     except Exception as e:
         print(f"获取 {symbol} 数据失败: {e}")
         return {"code": symbol, "name": "N/A", "price": "N/A", "change": "N/A"}
 
 # ------------------
-# AI analysis (新版调用方式)
+# AI analysis
 # ------------------
 def ai_analysis(stock):
     if stock["price"] == "N/A":
