@@ -2,6 +2,7 @@ import os
 import requests
 import yfinance as yf
 import google.genai as genai
+from google.genai import types  # 新增导入
 
 # ------------------
 # Load environment secrets
@@ -73,7 +74,7 @@ def get_all_stock_data():
     return all_data
 
 # ------------------
-# 终极防幻觉AI分析
+# 终极防幻觉AI分析（修复版）
 # ------------------
 def generate_full_report(all_stocks):
     # 筛选出有有效数据的股票
@@ -118,13 +119,14 @@ def generate_full_report(all_stocks):
     
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",  # 使用更准确的Flash版本，而不是Lite
+            model="gemini-2.5-flash",
             contents=prompt,
-            generation_config={
-                "temperature": 0.1,  # 极低温度，几乎不产生幻觉
-                "top_p": 0.1,
-                "top_k": 1
-            }
+            # 修复：使用新的 config 参数和 types.GenerateContentConfig
+            config=types.GenerateContentConfig(
+                temperature=0.1,  # 极低温度，几乎不产生幻觉
+                top_p=0.1,
+                top_k=1
+            )
         )
         return response.text.strip()
     except Exception as e:
