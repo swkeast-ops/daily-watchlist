@@ -6,11 +6,11 @@ import pandas as pd
 import numpy as np
 import google.genai as genai
 from google.genai import types
-from datetime import datetime
-from zoneinfo import ZoneInfo  # Python 3.9+ 内置时区支持
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 # ------------------
-# 配置香港时区（永远使用香港时间）
+# 配置香港时区
 # ------------------
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
 
@@ -21,10 +21,60 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 STOCK_LIST = os.getenv("STOCK_LIST")
-# 手动强制指定运行模式：export FORCE_MODE=morning 或 export FORCE_MODE=evening
 FORCE_MODE = os.getenv("FORCE_MODE", None)
 
 stock_list = [x.strip() for x in STOCK_LIST.split(",")]
+
+# ------------------
+# 智能数据验证系统
+# ------------------
+def validate_and_clean_data(stock_data):
+    """验证并清理所有数据，确保数值在合理范围内"""
+    cleaned = stock_data.copy()
+    issues = []
+    
+    # 1. 智能股息率检测和修正
+    if isinstance(cleaned["dividend_yield"], (int, float)):
+        if cleaned["dividend_yield"] > 1:
+            # yfinance返回的是已经乘以100的百分比，不需要再乘
+            cleaned["dividend_yield"] = round(cleaned["dividend_yield"], 2)
+            issues.append(f"股息率格式修正: {stock_data['dividend_yield']} → {cleaned['dividend_yield']}%")
+        else:
+            # 正常小数，乘以100
+            cleaned["dividend_yield"] = round(cleaned["dividend_yield"] * 100, 2)
+    
+    # 2. 合理性检查
+    # 股息率合理范围：0-20%
+    if isinstance(cleaned["dividend_yield"], (int, float)) and (cleaned["dividend_yield"] < 0 or cleaned["dividend_yield"] > 20):
+        issues.append(f"股息率异常: {cleaned['dividend_yield']}%，标记为N/A")
+        cleaned["dividend_yield"] = "N/A"
+    
+    # PE合理范围：0-100
+    if isinstance(cleaned["pe_ratio"], (int, float)) and (cleaned["pe_ratio"] < 0 or cleaned["pe_ratio"] > 100):
+        issues.append(f"PE异常: {cleaned['pe_ratio']}，标记为N/A")
+        cleaned["pe_ratio"] = "N/A"
+    
+    # PB合理范围：0-20
+    if isinstance(cleaned["pb_ratio"], (int, float)) and (cleaned["pb_ratio"] < 0 or cleaned["pb_ratio"] > 20):
+        issues.append(f"PB异常: {cleaned['pb_ratio']}，标记为N/A")
+        cleaned["pb_ratio"] = "N/A"
+    
+    # ROE合理范围：-50-50%
+    if isinstance(cleaned["roe"], (int, float)) and (cleaned["roe"] < -50 or cleaned["roe"] > 50):
+        issues.append(f"ROE异常: {cleaned['roe']}%，标记为N/A")
+        cleaned["roe"] = "N/A"
+    
+    # 涨跌幅合理范围：-30-30%
+    if isinstance(cleaned["change_pct"], (int, float)) and (cleaned["change_pct"] < -30 or cleaned["change_pct"] > 30):
+        issues.append(f"涨跌幅异常: {cleaned['change_pct']}%，标记为N/A")
+        cleaned["change_pct"] = "N/A"
+    
+    # 成交量变化合理范围：-90-500%
+    if isinstance(cleaned["volume_change_pct"], (int, float)) and (cleaned["volume_change_pct"] < -90 or cleaned["volume_change_pct"] > 500):
+        issues.append(f"成交量变化异常: {cleaned['volume_change_pct']}%，标记为N/A")
+        cleaned["volume_change_pct"] = "N/A"
+    
+    return cleaned, issues
 
 # ------------------
 # Gemini AI setup with auto-retry and fallback
@@ -32,7 +82,6 @@ stock_list = [x.strip() for x in STOCK_LIST.split(",")]
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 def generate_content_with_retry(prompt, max_retries=2):
-    """带自动重试和模型降级的AI调用函数"""
     models = ["gemini-2.5-flash-lite", "gemini-2.5-flash"]
     retry_delay = 3
     
@@ -64,7 +113,6 @@ def generate_content_with_retry(prompt, max_retries=2):
 # 技术指标计算函数
 # ------------------
 def calculate_technical_indicators(hist):
-    """计算所有技术指标"""
     indicators = {}
     
     try:
@@ -141,7 +189,6 @@ def calculate_technical_indicators(hist):
 # 获取美股隔夜数据
 # ------------------
 def get_us_market_data():
-    """获取隔夜美股三大指数数据"""
     us_indices = {
         "^GSPC": "标普500",
         "^DJI": "道琼斯工业平均指数",
@@ -171,10 +218,12 @@ def get_us_market_data():
     return us_data
 
 # ------------------
-# Get ALL stock data
+# Get ALL stock data (带数据验证)
 # ------------------
 def get_all_stock_data():
     all_data = []
+    total_issues = 0
+    
     for symbol in stock_list:
         try:
             ticker = yf.Ticker(symbol)
@@ -188,7 +237,7 @@ def get_all_stock_data():
             # 基本面指标
             pe_ratio = info.get("trailingPE", "N/A")
             pb_ratio = info.get("priceToBook", "N/A")
-            dividend_yield = round(info.get("dividendYield", 0) * 100, 2) if info.get("dividendYield") else "N/A"
+            dividend_yield = info.get("dividendYield", 0)
             roe = round(info.get("returnOnEquity", 0) * 100, 2) if info.get("returnOnEquity") else "N/A"
             eps = info.get("trailingEps", "N/A")
             beta = info.get("beta", "N/A")
@@ -211,7 +260,7 @@ def get_all_stock_data():
             tech_indicators = calculate_technical_indicators(hist)
             
             # 合并所有数据
-            stock_data = {
+            raw_data = {
                 "code": symbol,
                 "name": info.get("longName", symbol),
                 "price": price,
@@ -227,7 +276,14 @@ def get_all_stock_data():
                 **tech_indicators
             }
             
-            all_data.append(stock_data)
+            # 验证和清理数据
+            cleaned_data, issues = validate_and_clean_data(raw_data)
+            total_issues += len(issues)
+            
+            if issues:
+                print(f"⚠️ {symbol} 数据问题: {issues}")
+            
+            all_data.append(cleaned_data)
             
         except Exception as e:
             print(f"获取 {symbol} 数据失败: {e}")
@@ -249,13 +305,14 @@ def get_all_stock_data():
                 'ma5': "N/A", 'ma20': "N/A", 'ma60': "N/A", 'trend': "N/A",
                 'volume_change_pct': "N/A", 'volume_ratio': "N/A", 'atr': "N/A"
             })
+    
+    print(f"✅ 数据获取完成，共处理 {len(all_data)} 只股票，发现 {total_issues} 个数据问题并修正")
     return all_data
 
 # ------------------
 # 纯Python智能分析引擎
 # ------------------
 def generate_python_analysis(all_stocks, is_morning, us_data=None, data_date=None):
-    """完全不需要AI，用纯Python代码生成专业分析报告"""
     valid_stocks = [s for s in all_stocks if s["price"] != "N/A"]
     
     # 按涨跌幅排序
@@ -268,10 +325,11 @@ def generate_python_analysis(all_stocks, is_morning, us_data=None, data_date=Non
     up_count = len([s for s in valid_stocks if s["change_pct"] > 0])
     down_count = len([s for s in valid_stocks if s["change_pct"] < 0])
     
-    # 筛选特别关注股票
+    # 筛选特别关注股票（优化后的筛选条件）
     overbought = [s for s in valid_stocks if s["rsi"] != "N/A" and s["rsi"] > 70]
     oversold = [s for s in valid_stocks if s["rsi"] != "N/A" and s["rsi"] < 30]
-    high_volume = [s for s in valid_stocks if s["volume_change_pct"] != "N/A" and s["volume_change_pct"] > 100]
+    # 只筛选成交量变化>200%或<-70%的真正异常
+    high_volume = [s for s in valid_stocks if s["volume_change_pct"] != "N/A" and (s["volume_change_pct"] > 200 or s["volume_change_pct"] < -70)]
     high_dividend = [s for s in valid_stocks if s["dividend_yield"] != "N/A" and s["dividend_yield"] > 5]
     
     # 生成报告
@@ -305,7 +363,9 @@ def generate_python_analysis(all_stocks, is_morning, us_data=None, data_date=Non
         if oversold:
             report += "RSI超卖(<30): " + ", ".join([s["code"] for s in oversold]) + "\n"
         if high_volume:
-            report += "昨日成交量翻倍: " + ", ".join([s["code"] for s in high_volume]) + "\n"
+            report += "成交量异常: " + ", ".join([s["code"] for s in high_volume]) + "\n"
+        if high_dividend:
+            report += "高股息(>5%): " + ", ".join([s["code"] for s in high_dividend]) + "\n"
         
     else:
         report = f"🌇 港股收盘总结报告\n\n"
@@ -319,7 +379,7 @@ def generate_python_analysis(all_stocks, is_morning, us_data=None, data_date=Non
         report += "🚀 今日涨幅前5名\n"
         for stock in top_gainers:
             comment = ""
-            if stock["volume_change_pct"] != "N/A" and stock["volume_change_pct"] > 50:
+            if stock["volume_change_pct"] != "N/A" and stock["volume_change_pct"] > 100:
                 comment += "成交量大幅放大"
             elif stock["trend"] == "强势上涨":
                 comment += "处于强势上涨趋势"
@@ -333,7 +393,7 @@ def generate_python_analysis(all_stocks, is_morning, us_data=None, data_date=Non
         report += "📉 今日跌幅前5名\n"
         for stock in top_losers:
             comment = ""
-            if stock["volume_change_pct"] != "N/A" and stock["volume_change_pct"] > 50:
+            if stock["volume_change_pct"] != "N/A" and stock["volume_change_pct"] > 100:
                 comment += "放量下跌"
             elif stock["trend"] == "强势下跌":
                 comment += "处于强势下跌趋势"
@@ -350,7 +410,7 @@ def generate_python_analysis(all_stocks, is_morning, us_data=None, data_date=Non
         if oversold:
             report += "RSI超卖(<30): " + ", ".join([s["code"] for s in oversold]) + "\n"
         if high_volume:
-            report += "今日成交量翻倍: " + ", ".join([s["code"] for s in high_volume]) + "\n"
+            report += "成交量异常: " + ", ".join([s["code"] for s in high_volume]) + "\n"
         if high_dividend:
             report += "高股息(>5%): " + ", ".join([s["code"] for s in high_dividend]) + "\n"
     
