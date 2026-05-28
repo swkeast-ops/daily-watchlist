@@ -6,7 +6,13 @@ import pandas as pd
 import numpy as np
 import google.genai as genai
 from google.genai import types
-from datetime import datetime, timedelta
+from datetime import datetime
+from zoneinfo import ZoneInfo  # Python 3.9+ 内置时区支持
+
+# ------------------
+# 配置香港时区（永远使用香港时间）
+# ------------------
+HK_TZ = ZoneInfo("Asia/Hong_Kong")
 
 # ------------------
 # Load environment secrets
@@ -15,6 +21,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 STOCK_LIST = os.getenv("STOCK_LIST")
+# 手动强制指定运行模式：export FORCE_MODE=morning 或 export FORCE_MODE=evening
+FORCE_MODE = os.getenv("FORCE_MODE", None)
 
 stock_list = [x.strip() for x in STOCK_LIST.split(",")]
 
@@ -246,7 +254,7 @@ def get_all_stock_data():
 # ------------------
 # 纯Python智能分析引擎
 # ------------------
-def generate_python_analysis(all_stocks, is_morning, us_data=None):
+def generate_python_analysis(all_stocks, is_morning, us_data=None, data_date=None):
     """完全不需要AI，用纯Python代码生成专业分析报告"""
     valid_stocks = [s for s in all_stocks if s["price"] != "N/A"]
     
@@ -266,13 +274,11 @@ def generate_python_analysis(all_stocks, is_morning, us_data=None):
     high_volume = [s for s in valid_stocks if s["volume_change_pct"] != "N/A" and s["volume_change_pct"] > 100]
     high_dividend = [s for s in valid_stocks if s["dividend_yield"] != "N/A" and s["dividend_yield"] > 5]
     
-    # 获取当前日期
-    today = datetime.now().strftime("%Y年%m月%d日")
-    
     # 生成报告
     if is_morning:
         report = f"🌅 港股早盘观察报告\n\n"
-        report += f"📅 日期: {today}\n\n"
+        report += f"📅 数据日期: {data_date.strftime('%Y年%m月%d日')}\n"
+        report += f"⏰ 生成时间: {datetime.now(HK_TZ).strftime('%Y年%m月%d日 %H:%M')}\n\n"
         
         # 美股隔夜表现
         if us_data:
@@ -303,7 +309,8 @@ def generate_python_analysis(all_stocks, is_morning, us_data=None):
         
     else:
         report = f"🌇 港股收盘总结报告\n\n"
-        report += f"📅 日期: {today}\n\n"
+        report += f"📅 数据日期: {data_date.strftime('%Y年%m月%d日')}\n"
+        report += f"⏰ 生成时间: {datetime.now(HK_TZ).strftime('%Y年%m月%d日 %H:%M')}\n\n"
         
         report += "📈 今日市场概览\n"
         report += f"整体平均涨跌幅: {avg_change}%\n"
@@ -354,16 +361,13 @@ def generate_python_analysis(all_stocks, is_morning, us_data=None):
 # ------------------
 # 终极防幻觉AI分析
 # ------------------
-def generate_full_report(all_stocks, is_morning, us_data=None):
+def generate_full_report(all_stocks, is_morning, us_data=None, data_date=None):
     valid_stocks = [s for s in all_stocks if s["price"] != "N/A"]
     
     # 按涨跌幅排序
     sorted_stocks = sorted(valid_stocks, key=lambda x: x["change_pct"], reverse=True)
     top_gainers = sorted_stocks[:5]
     top_losers = sorted_stocks[-5:]
-    
-    # 获取当前日期
-    today = datetime.now().strftime("%Y年%m月%d日")
     
     # 准备数据表格
     data_table = "代码 | 名称 | 涨跌幅% | PE | PB | 股息率% | ROE% | RSI | 趋势 | 成交量变化%\n"
@@ -381,22 +385,21 @@ def generate_full_report(all_stocks, is_morning, us_data=None):
                 us_market_summary += f"{index['name']}: {index['change_pct']}%\n"
         
         prompt = f"""
-        你是一个严格遵守事实的港股分析师。现在是香港时间早上9点，港股还没有开盘。请基于我提供的前一个交易日的收盘数据和隔夜美股数据，生成一份早盘观察报告。
+        你是一个严格遵守事实的港股分析师。现在是香港时间早上9点，港股还没有开盘。请基于我提供的{data_date.strftime('%Y年%m月%d日')}的收盘数据和隔夜美股数据，生成一份早盘观察报告。
 
         【绝对规则】
         1.  所有分析必须100%基于我提供的数据，不得使用任何你自己的知识库
         2.  不得编造任何我没有提供的数据
         3.  语言简洁，重点突出，适合在手机上阅读
-        4.  报告日期是: {today}
 
         {us_market_summary}
 
-        【前一个交易日港股数据】
+        【{data_date.strftime('%Y年%m月%d日')}港股数据】
         {data_table}
 
         【报告结构】
         1.  隔夜美股影响：简要说明美股表现对今天港股开盘的可能影响
-        2.  昨日市场回顾：总结前一个交易日的整体市场情况
+        2.  昨日市场回顾：总结{data_date.strftime('%Y年%m月%d日')}的整体市场情况
         3.  昨日强势股：列出涨幅前5名的股票
         4.  昨日弱势股：列出跌幅前5名的股票
         5.  今日重点关注：列出RSI超买、超卖和成交量异常的股票
@@ -406,16 +409,15 @@ def generate_full_report(all_stocks, is_morning, us_data=None):
         """
     else:
         prompt = f"""
-        你是一个严格遵守事实的港股分析师。现在是香港时间下午4点30分，港股刚刚收盘。请基于我提供的当天完整交易数据，生成一份收盘总结报告。
+        你是一个严格遵守事实的港股分析师。现在是香港时间下午4点30分，港股刚刚收盘。请基于我提供的{data_date.strftime('%Y年%m月%d日')}的完整交易数据，生成一份收盘总结报告。
 
         【绝对规则】
         1.  所有分析必须100%基于我提供的数据，不得使用任何你自己的知识库
         2.  不得编造任何我没有提供的数据
         3.  每一个结论都必须明确引用对应的指标
         4.  语言简洁，重点突出，适合在手机上阅读
-        5.  报告日期是: {today}
 
-        【今日港股数据】
+        【{data_date.strftime('%Y年%m月%d日')}港股数据】
         {data_table}
 
         【报告结构】
@@ -432,9 +434,13 @@ def generate_full_report(all_stocks, is_morning, us_data=None):
     ai_result = generate_content_with_retry(prompt)
     
     if ai_result:
-        return ai_result
+        # 给AI生成的报告加上日期和时间
+        header = f"🌅 港股早盘观察报告\n\n" if is_morning else f"🌇 港股收盘总结报告\n\n"
+        header += f"📅 数据日期: {data_date.strftime('%Y年%m月%d日')}\n"
+        header += f"⏰ 生成时间: {datetime.now(HK_TZ).strftime('%Y年%m月%d日 %H:%M')}\n\n"
+        return header + ai_result
     else:
-        return generate_python_analysis(all_stocks, is_morning, us_data)
+        return generate_python_analysis(all_stocks, is_morning, us_data, data_date)
 
 # ------------------
 # 改进版Telegram发送函数
@@ -483,12 +489,34 @@ def send_telegram(message):
 # Main
 # ------------------
 if __name__ == "__main__":
-    # 自动检测当前运行模式
-    now = datetime.now()
-    is_morning = now.hour < 12  # 12点之前都是早盘模式
+    # 获取当前香港时间
+    now_hk = datetime.now(HK_TZ)
+    print(f"📅 当前香港时间: {now_hk.strftime('%Y-%m-%d %H:%M:%S')}")
     
-    print(f"📅 当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"🔄 运行模式: {'早盘模式' if is_morning else '收盘模式'}")
+    # 判断运行模式
+    if FORCE_MODE == "morning":
+        is_morning = True
+        print("🔄 强制运行模式: 早盘模式")
+    elif FORCE_MODE == "evening":
+        is_morning = False
+        print("🔄 强制运行模式: 收盘模式")
+    else:
+        # 自动判断：12点之前是早盘模式，12点之后是收盘模式
+        is_morning = now_hk.hour < 12
+        print(f"🔄 自动运行模式: {'早盘模式' if is_morning else '收盘模式'}")
+    
+    # 确定数据日期
+    if is_morning:
+        # 早盘模式使用前一个交易日的数据
+        data_date = now_hk - timedelta(days=1)
+        # 如果是周一，使用上周五的数据
+        if data_date.weekday() >= 5:
+            data_date = data_date - timedelta(days=data_date.weekday() - 4)
+    else:
+        # 收盘模式使用当天的数据
+        data_date = now_hk
+    
+    print(f"📅 数据日期: {data_date.strftime('%Y年%m月%d日')}")
     
     print("📥 开始获取股票数据和计算技术指标...")
     all_stocks = get_all_stock_data()
@@ -499,7 +527,7 @@ if __name__ == "__main__":
         us_data = get_us_market_data()
     
     print("🤖 开始分析...")
-    report = generate_full_report(all_stocks, is_morning, us_data)
+    report = generate_full_report(all_stocks, is_morning, us_data, data_date)
     
     print("📤 发送报告到Telegram...")
     send_telegram(report)
