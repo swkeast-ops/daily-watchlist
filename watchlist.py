@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 import google.genai as genai
 from google.genai import types
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ------------------
 # Load environment secrets
@@ -25,9 +25,8 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 def generate_content_with_retry(prompt, max_retries=2):
     """带自动重试和模型降级的AI调用函数"""
-    # 优先使用最稳定的 lite 版本，再试完整版
     models = ["gemini-2.5-flash-lite", "gemini-2.5-flash"]
-    retry_delay = 3  # 初始等待3秒
+    retry_delay = 3
     
     for model in models:
         for attempt in range(max_retries):
@@ -48,7 +47,7 @@ def generate_content_with_retry(prompt, max_retries=2):
                 if attempt < max_retries - 1:
                     print(f"⏳ 等待 {retry_delay} 秒后重试...")
                     time.sleep(retry_delay)
-                    retry_delay *= 2  # 指数退避
+                    retry_delay *= 2
     
     print("❌ 所有Gemini模型调用都失败了，切换到纯Python智能分析")
     return None
@@ -87,7 +86,7 @@ def calculate_technical_indicators(hist):
         lower_band = ma20 - (std20 * 2)
         current_price = hist['Close'].iloc[-1]
         bollinger_position = (current_price - lower_band.iloc[-1]) / (upper_band.iloc[-1] - lower_band.iloc[-1])
-        indicators['bollinger_position'] = round(bollinger_position * 100, 1)  # 0-100%
+        indicators['bollinger_position'] = round(bollinger_position * 100, 1)
         
         # 均线
         indicators['ma5'] = round(hist['Close'].rolling(window=5).mean().iloc[-1], 2)
@@ -131,7 +130,40 @@ def calculate_technical_indicators(hist):
     return indicators
 
 # ------------------
-# Get ALL stock data (15个核心指标)
+# 获取美股隔夜数据
+# ------------------
+def get_us_market_data():
+    """获取隔夜美股三大指数数据"""
+    us_indices = {
+        "^GSPC": "标普500",
+        "^DJI": "道琼斯工业平均指数",
+        "^IXIC": "纳斯达克综合指数"
+    }
+    
+    us_data = []
+    for symbol, name in us_indices.items():
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+            price = info.get("regularMarketPrice", "N/A")
+            change_pct = round(info.get("regularMarketChangePercent", 0) * 100, 2)
+            us_data.append({
+                "name": name,
+                "price": price,
+                "change_pct": change_pct
+            })
+        except Exception as e:
+            print(f"获取 {name} 数据失败: {e}")
+            us_data.append({
+                "name": name,
+                "price": "N/A",
+                "change_pct": "N/A"
+            })
+    
+    return us_data
+
+# ------------------
+# Get ALL stock data
 # ------------------
 def get_all_stock_data():
     all_data = []
@@ -204,7 +236,7 @@ def get_all_stock_data():
                 "beta": "N/A",
                 "turnover": "N/A",
                 "fifty_two_week_position": "N/A",
-                "macd": "N/A", 'macd_signal': "N/A", 'macd_crossover': "N/A",
+                'macd': "N/A", 'macd_signal': "N/A", 'macd_crossover': "N/A",
                 'rsi': "N/A", 'bollinger_position': "N/A",
                 'ma5': "N/A", 'ma20': "N/A", 'ma60': "N/A", 'trend': "N/A",
                 'volume_change_pct': "N/A", 'volume_ratio': "N/A", 'atr': "N/A"
@@ -212,9 +244,9 @@ def get_all_stock_data():
     return all_data
 
 # ------------------
-# 纯Python智能分析引擎（终极保险，永远不会失败）
+# 纯Python智能分析引擎
 # ------------------
-def generate_python_analysis(all_stocks):
+def generate_python_analysis(all_stocks, is_morning, us_data=None):
     """完全不需要AI，用纯Python代码生成专业分析报告"""
     valid_stocks = [s for s in all_stocks if s["price"] != "N/A"]
     
@@ -238,62 +270,82 @@ def generate_python_analysis(all_stocks):
     today = datetime.now().strftime("%Y年%m月%d日")
     
     # 生成报告
-    report = f"📊 港股观察名单报告（智能分析版）\n\n"
-    report += f"📅 日期: {today}\n\n"
-    
-    # 市场概览
-    report += "📈 市场概览\n"
-    report += f"整体平均涨跌幅: {avg_change}%\n"
-    report += f"上涨股票: {up_count} 只 | 下跌股票: {down_count} 只\n\n"
-    
-    # 涨幅前5名
-    report += "🚀 涨幅前5名\n"
-    for stock in top_gainers:
-        comment = ""
-        if stock["volume_change_pct"] != "N/A" and stock["volume_change_pct"] > 50:
-            comment += "成交量大幅放大，资金关注度高"
-        elif stock["trend"] == "强势上涨":
-            comment += "处于强势上涨趋势"
-        elif stock["rsi"] != "N/A" and stock["rsi"] > 70:
-            comment += "RSI超买，注意短期回调风险"
+    if is_morning:
+        report = f"🌅 港股早盘观察报告\n\n"
+        report += f"📅 日期: {today}\n\n"
         
-        report += f"🔹 {stock['code']} | {stock['name']}\n"
-        report += f"涨跌幅: {stock['change_pct']}% | 换手率: {stock['turnover']}%\n"
-        if comment:
-            report += f"分析: {comment}\n"
-        report += "\n"
-    
-    # 跌幅前5名
-    report += "📉 跌幅前5名\n"
-    for stock in top_losers:
-        comment = ""
-        if stock["volume_change_pct"] != "N/A" and stock["volume_change_pct"] > 50:
-            comment += "放量下跌，资金出逃明显"
-        elif stock["trend"] == "强势下跌":
-            comment += "处于强势下跌趋势"
-        elif stock["rsi"] != "N/A" and stock["rsi"] < 30:
-            comment += "RSI超卖，可能存在反弹机会"
+        # 美股隔夜表现
+        if us_data:
+            report += "🇺🇸 隔夜美股表现\n"
+            for index in us_data:
+                report += f"{index['name']}: {index['change_pct']}%\n"
+            report += "\n"
         
-        report += f"🔹 {stock['code']} | {stock['name']}\n"
-        report += f"涨跌幅: {stock['change_pct']}% | 换手率: {stock['turnover']}%\n"
-        if comment:
-            report += f"分析: {comment}\n"
-        report += "\n"
-    
-    # 特别关注
-    report += "⚠️ 特别关注\n"
-    
-    if overbought:
-        report += "RSI超买(>70): " + ", ".join([s["code"] for s in overbought]) + "\n"
-    
-    if oversold:
-        report += "RSI超卖(<30): " + ", ".join([s["code"] for s in oversold]) + "\n"
-    
-    if high_volume:
-        report += "成交量翻倍: " + ", ".join([s["code"] for s in high_volume]) + "\n"
-    
-    if high_dividend:
-        report += "高股息(>5%): " + ", ".join([s["code"] for s in high_dividend]) + "\n"
+        report += "📈 昨日市场回顾\n"
+        report += f"整体平均涨跌幅: {avg_change}%\n"
+        report += f"上涨股票: {up_count} 只 | 下跌股票: {down_count} 只\n\n"
+        
+        report += "🚀 昨日涨幅前5名\n"
+        for stock in top_gainers:
+            report += f"🔹 {stock['code']} | {stock['name']} | {stock['change_pct']}%\n"
+        
+        report += "\n📉 昨日跌幅前5名\n"
+        for stock in top_losers:
+            report += f"🔹 {stock['code']} | {stock['name']} | {stock['change_pct']}%\n"
+        
+        report += "\n⚠️ 今日重点关注\n"
+        if overbought:
+            report += "RSI超买(>70): " + ", ".join([s["code"] for s in overbought]) + "\n"
+        if oversold:
+            report += "RSI超卖(<30): " + ", ".join([s["code"] for s in oversold]) + "\n"
+        if high_volume:
+            report += "昨日成交量翻倍: " + ", ".join([s["code"] for s in high_volume]) + "\n"
+        
+    else:
+        report = f"🌇 港股收盘总结报告\n\n"
+        report += f"📅 日期: {today}\n\n"
+        
+        report += "📈 今日市场概览\n"
+        report += f"整体平均涨跌幅: {avg_change}%\n"
+        report += f"上涨股票: {up_count} 只 | 下跌股票: {down_count} 只\n\n"
+        
+        report += "🚀 今日涨幅前5名\n"
+        for stock in top_gainers:
+            comment = ""
+            if stock["volume_change_pct"] != "N/A" and stock["volume_change_pct"] > 50:
+                comment += "成交量大幅放大"
+            elif stock["trend"] == "强势上涨":
+                comment += "处于强势上涨趋势"
+            
+            report += f"🔹 {stock['code']} | {stock['name']}\n"
+            report += f"涨跌幅: {stock['change_pct']}% | 换手率: {stock['turnover']}%\n"
+            if comment:
+                report += f"分析: {comment}\n"
+            report += "\n"
+        
+        report += "📉 今日跌幅前5名\n"
+        for stock in top_losers:
+            comment = ""
+            if stock["volume_change_pct"] != "N/A" and stock["volume_change_pct"] > 50:
+                comment += "放量下跌"
+            elif stock["trend"] == "强势下跌":
+                comment += "处于强势下跌趋势"
+            
+            report += f"🔹 {stock['code']} | {stock['name']}\n"
+            report += f"涨跌幅: {stock['change_pct']}% | 换手率: {stock['turnover']}%\n"
+            if comment:
+                report += f"分析: {comment}\n"
+            report += "\n"
+        
+        report += "⚠️ 特别关注\n"
+        if overbought:
+            report += "RSI超买(>70): " + ", ".join([s["code"] for s in overbought]) + "\n"
+        if oversold:
+            report += "RSI超卖(<30): " + ", ".join([s["code"] for s in oversold]) + "\n"
+        if high_volume:
+            report += "今日成交量翻倍: " + ", ".join([s["code"] for s in high_volume]) + "\n"
+        if high_dividend:
+            report += "高股息(>5%): " + ", ".join([s["code"] for s in high_dividend]) + "\n"
     
     report += "\n⚠️ 分析仅供参考，不构成投资建议。"
     
@@ -302,8 +354,7 @@ def generate_python_analysis(all_stocks):
 # ------------------
 # 终极防幻觉AI分析
 # ------------------
-def generate_full_report(all_stocks):
-    # 筛选出有有效数据的股票
+def generate_full_report(all_stocks, is_morning, us_data=None):
     valid_stocks = [s for s in all_stocks if s["price"] != "N/A"]
     
     # 按涨跌幅排序
@@ -314,69 +365,85 @@ def generate_full_report(all_stocks):
     # 获取当前日期
     today = datetime.now().strftime("%Y年%m月%d日")
     
-    # 准备数据表格（只保留AI分析最需要的核心指标）
+    # 准备数据表格
     data_table = "代码 | 名称 | 涨跌幅% | PE | PB | 股息率% | ROE% | RSI | 趋势 | 成交量变化%\n"
     data_table += "---|---|---|---|---|---|---|---|---|---\n"
     
     for stock in valid_stocks:
         data_table += f"{stock['code']} | {stock['name']} | {stock['change_pct']} | {stock['pe_ratio']} | {stock['pb_ratio']} | {stock['dividend_yield']} | {stock['roe']} | {stock['rsi']} | {stock['trend']} | {stock['volume_change_pct']}\n"
     
-    prompt = f"""
-    你是一个严格遵守事实的港股分析师。请基于我提供的以下数据，生成一份专业、全面的每日市场报告。
+    # 构建不同的提示词
+    if is_morning:
+        us_market_summary = ""
+        if us_data:
+            us_market_summary = "隔夜美股表现：\n"
+            for index in us_data:
+                us_market_summary += f"{index['name']}: {index['change_pct']}%\n"
+        
+        prompt = f"""
+        你是一个严格遵守事实的港股分析师。现在是香港时间早上9点，港股还没有开盘。请基于我提供的前一个交易日的收盘数据和隔夜美股数据，生成一份早盘观察报告。
 
-    【绝对规则 - 违反任何一条都视为失败】
-    1.  所有分析必须100%基于我提供的数据，不得使用任何你自己的知识库
-    2.  不得编造任何我没有提供的数据，包括新闻、事件、财务数据等
-    3.  每一个结论都必须明确引用对应的指标
-    4.  如果数据不足或不确定，明确标注"数据不足，无法分析"
-    5.  不得给出任何投资建议，只做客观描述和分析
-    6.  语言简洁，重点突出，适合在手机上阅读
-    7.  报告日期是: {today}
+        【绝对规则】
+        1.  所有分析必须100%基于我提供的数据，不得使用任何你自己的知识库
+        2.  不得编造任何我没有提供的数据
+        3.  语言简洁，重点突出，适合在手机上阅读
+        4.  报告日期是: {today}
 
-    【指标解读参考】
-    - PE: 市盈率，越低估值越低
-    - PB: 市净率，越低越安全
-    - 股息率: 越高分红回报越高
-    - ROE: 净资产收益率，越高盈利能力越强
-    - RSI: 相对强弱指数，>70超买，<30超卖
-    - 成交量变化%: 相对于20日平均成交量的变化
+        {us_market_summary}
 
-    【股票数据】
-    {data_table}
+        【前一个交易日港股数据】
+        {data_table}
 
-    【报告结构】
-    1.  市场概览：简要说明今天整体市场的涨跌情况和主要特征
-    2.  涨幅前5名：列出涨幅最大的5只股票，结合估值、技术面和成交量进行简要分析
-    3.  跌幅前5名：列出跌幅最大的5只股票，结合估值、技术面和成交量进行简要分析
-    4.  特别关注：
-        - RSI>70的超买股票
-        - RSI<30的超卖股票
-        - 成交量变化超过100%的股票
-        - 股息率超过5%的高分红股票
-    5.  免责声明：AI分析仅供参考，不构成投资建议
+        【报告结构】
+        1.  隔夜美股影响：简要说明美股表现对今天港股开盘的可能影响
+        2.  昨日市场回顾：总结前一个交易日的整体市场情况
+        3.  昨日强势股：列出涨幅前5名的股票
+        4.  昨日弱势股：列出跌幅前5名的股票
+        5.  今日重点关注：列出RSI超买、超卖和成交量异常的股票
+        6.  免责声明
 
-    请严格按照以上结构生成报告，不要添加任何额外内容。
-    """
+        请严格按照以上结构生成报告。
+        """
+    else:
+        prompt = f"""
+        你是一个严格遵守事实的港股分析师。现在是香港时间下午4点30分，港股刚刚收盘。请基于我提供的当天完整交易数据，生成一份收盘总结报告。
+
+        【绝对规则】
+        1.  所有分析必须100%基于我提供的数据，不得使用任何你自己的知识库
+        2.  不得编造任何我没有提供的数据
+        3.  每一个结论都必须明确引用对应的指标
+        4.  语言简洁，重点突出，适合在手机上阅读
+        5.  报告日期是: {today}
+
+        【今日港股数据】
+        {data_table}
+
+        【报告结构】
+        1.  市场概览：简要说明今天整体市场的涨跌情况和主要特征
+        2.  涨幅前5名：列出涨幅最大的5只股票，结合成交量和趋势进行简要分析
+        3.  跌幅前5名：列出跌幅最大的5只股票，结合成交量和趋势进行简要分析
+        4.  特别关注：列出RSI超买、超卖、成交量异常和高股息的股票
+        5.  明日展望：基于今天的数据，简要说明明天可能的市场走势
+        6.  免责声明
+
+        请严格按照以上结构生成报告。
+        """
     
     ai_result = generate_content_with_retry(prompt)
     
     if ai_result:
         return ai_result
     else:
-        # 终极降级：纯Python智能分析报告
-        return generate_python_analysis(all_stocks)
+        return generate_python_analysis(all_stocks, is_morning, us_data)
 
 # ------------------
-# 改进版Telegram发送函数（自动分块+完整错误日志）
+# 改进版Telegram发送函数
 # ------------------
 def send_telegram(message):
-    # Telegram单条消息最大长度4096字符，留200字符余量
     MAX_CHUNK_SIZE = 3800
     
-    # 自动分块
     chunks = []
     while len(message) > MAX_CHUNK_SIZE:
-        # 找最近的换行符分割，避免把一句话拆成两半
         split_index = message.rfind("\n", 0, MAX_CHUNK_SIZE)
         if split_index == -1:
             split_index = MAX_CHUNK_SIZE
@@ -399,13 +466,9 @@ def send_telegram(message):
             response = requests.post(url, data=data, timeout=15)
             response.raise_for_status()
             print(f"✅ 第 {i+1}/{len(chunks)} 条消息发送成功")
-            # 每条消息之间间隔1秒，避免触发Telegram频率限制
             time.sleep(1)
         except Exception as e:
             print(f"❌ 第 {i+1}/{len(chunks)} 条消息发送失败 (Markdown): {e}")
-            print(f"响应内容: {response.text if 'response' in locals() else '无响应'}")
-            
-            # 如果Markdown失败，尝试用纯文本发送
             print("🔄 尝试用纯文本发送...")
             data["parse_mode"] = None
             try:
@@ -415,17 +478,28 @@ def send_telegram(message):
                 time.sleep(1)
             except Exception as e2:
                 print(f"❌ 纯文本发送也失败: {e2}")
-                print(f"响应内容: {response.text if 'response' in locals() else '无响应'}")
 
 # ------------------
 # Main
 # ------------------
 if __name__ == "__main__":
+    # 自动检测当前运行模式
+    now = datetime.now()
+    is_morning = now.hour < 12  # 12点之前都是早盘模式
+    
+    print(f"📅 当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🔄 运行模式: {'早盘模式' if is_morning else '收盘模式'}")
+    
     print("📥 开始获取股票数据和计算技术指标...")
     all_stocks = get_all_stock_data()
     
+    us_data = None
+    if is_morning:
+        print("📥 获取隔夜美股数据...")
+        us_data = get_us_market_data()
+    
     print("🤖 开始分析...")
-    report = generate_full_report(all_stocks)
+    report = generate_full_report(all_stocks, is_morning, us_data)
     
     print("📤 发送报告到Telegram...")
     send_telegram(report)
