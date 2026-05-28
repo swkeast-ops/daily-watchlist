@@ -1,8 +1,9 @@
 import os
 import requests
+import time
 import yfinance as yf
 import google.genai as genai
-from google.genai import types  # 新增导入
+from google.genai import types
 
 # ------------------
 # Load environment secrets
@@ -15,9 +16,38 @@ STOCK_LIST = os.getenv("STOCK_LIST")
 stock_list = [x.strip() for x in STOCK_LIST.split(",")]
 
 # ------------------
-# Gemini AI setup
+# Gemini AI setup with auto-retry and fallback
 # ------------------
 client = genai.Client(api_key=GEMINI_API_KEY)
+
+def generate_content_with_retry(prompt, max_retries=3):
+    """带自动重试和模型降级的AI调用函数"""
+    models = ["gemini-2.5-flash", "gemini-1.5-flash"]
+    retry_delay = 2  # 初始等待2秒
+    
+    for model in models:
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.1,
+                        top_p=0.1,
+                        top_k=1
+                    )
+                )
+                print(f"✅ AI分析成功，使用模型: {model}")
+                return response.text.strip()
+            except Exception as e:
+                print(f"❌ 模型 {model} 第 {attempt+1} 次调用失败: {e}")
+                if attempt < max_retries - 1:
+                    print(f"⏳ 等待 {retry_delay} 秒后重试...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # 指数退避
+    
+    print("❌ 所有模型调用都失败了")
+    return None
 
 # ------------------
 # Get ALL stock data (8个核心指标)
@@ -74,7 +104,7 @@ def get_all_stock_data():
     return all_data
 
 # ------------------
-# 终极防幻觉AI分析（修复版）
+# 终极防幻觉AI分析
 # ------------------
 def generate_full_report(all_stocks):
     # 筛选出有有效数据的股票
@@ -117,21 +147,12 @@ def generate_full_report(all_stocks):
     请严格按照以上结构生成报告，不要添加任何额外内容。
     """
     
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            # 修复：使用新的 config 参数和 types.GenerateContentConfig
-            config=types.GenerateContentConfig(
-                temperature=0.1,  # 极低温度，几乎不产生幻觉
-                top_p=0.1,
-                top_k=1
-            )
-        )
-        return response.text.strip()
-    except Exception as e:
-        print(f"AI分析失败: {e}")
-        # 降级到纯数据报告
+    ai_result = generate_content_with_retry(prompt)
+    
+    if ai_result:
+        return ai_result
+    else:
+        # 终极降级：纯数据报告
         fallback_report = "📊 港股观察名单报告（AI分析暂时不可用）\n\n"
         fallback_report += "涨幅前5名：\n"
         for stock in top_gainers:
@@ -165,7 +186,7 @@ if __name__ == "__main__":
     print("📥 开始获取股票数据...")
     all_stocks = get_all_stock_data()
     
-    print("🤖 开始AI分析（仅1次API调用）...")
+    print("🤖 开始AI分析（带自动重试和模型降级）...")
     report = generate_full_report(all_stocks)
     
     print("📤 发送报告到Telegram...")
