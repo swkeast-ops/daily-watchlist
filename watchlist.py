@@ -22,10 +22,11 @@ stock_list = [x.strip() for x in STOCK_LIST.split(",")]
 # ------------------
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-def generate_content_with_retry(prompt, max_retries=3):
+def generate_content_with_retry(prompt, max_retries=2):
     """带自动重试和模型降级的AI调用函数"""
-    models = ["gemini-2.5-flash", "gemini-1.5-flash"]
-    retry_delay = 2  # 初始等待2秒
+    # 优先使用最稳定的 lite 版本，再试完整版
+    models = ["gemini-2.5-flash-lite", "gemini-2.5-flash"]
+    retry_delay = 3  # 初始等待3秒
     
     for model in models:
         for attempt in range(max_retries):
@@ -48,7 +49,7 @@ def generate_content_with_retry(prompt, max_retries=3):
                     time.sleep(retry_delay)
                     retry_delay *= 2  # 指数退避
     
-    print("❌ 所有模型调用都失败了")
+    print("❌ 所有Gemini模型调用都失败了，切换到纯Python智能分析")
     return None
 
 # ------------------
@@ -210,6 +211,90 @@ def get_all_stock_data():
     return all_data
 
 # ------------------
+# 纯Python智能分析引擎（终极保险，永远不会失败）
+# ------------------
+def generate_python_analysis(all_stocks):
+    """完全不需要AI，用纯Python代码生成专业分析报告"""
+    valid_stocks = [s for s in all_stocks if s["price"] != "N/A"]
+    
+    # 按涨跌幅排序
+    sorted_stocks = sorted(valid_stocks, key=lambda x: x["change_pct"], reverse=True)
+    top_gainers = sorted_stocks[:5]
+    top_losers = sorted_stocks[-5:]
+    
+    # 计算市场整体情况
+    avg_change = round(np.mean([s["change_pct"] for s in valid_stocks]), 2)
+    up_count = len([s for s in valid_stocks if s["change_pct"] > 0])
+    down_count = len([s for s in valid_stocks if s["change_pct"] < 0])
+    
+    # 筛选特别关注股票
+    overbought = [s for s in valid_stocks if s["rsi"] != "N/A" and s["rsi"] > 70]
+    oversold = [s for s in valid_stocks if s["rsi"] != "N/A" and s["rsi"] < 30]
+    high_volume = [s for s in valid_stocks if s["volume_change_pct"] != "N/A" and s["volume_change_pct"] > 100]
+    high_dividend = [s for s in valid_stocks if s["dividend_yield"] != "N/A" and s["dividend_yield"] > 5]
+    
+    # 生成报告
+    report = "📊 港股观察名单报告（智能分析版）\n\n"
+    
+    # 市场概览
+    report += "📈 市场概览\n"
+    report += f"整体平均涨跌幅: {avg_change}%\n"
+    report += f"上涨股票: {up_count} 只 | 下跌股票: {down_count} 只\n\n"
+    
+    # 涨幅前5名
+    report += "🚀 涨幅前5名\n"
+    for stock in top_gainers:
+        comment = ""
+        if stock["volume_change_pct"] != "N/A" and stock["volume_change_pct"] > 50:
+            comment += "成交量大幅放大，资金关注度高"
+        elif stock["trend"] == "强势上涨":
+            comment += "处于强势上涨趋势"
+        elif stock["rsi"] != "N/A" and stock["rsi"] > 70:
+            comment += "RSI超买，注意短期回调风险"
+        
+        report += f"🔹 {stock['code']} | {stock['name']}\n"
+        report += f"涨跌幅: {stock['change_pct']}% | 换手率: {stock['turnover']}%\n"
+        if comment:
+            report += f"分析: {comment}\n"
+        report += "\n"
+    
+    # 跌幅前5名
+    report += "📉 跌幅前5名\n"
+    for stock in top_losers:
+        comment = ""
+        if stock["volume_change_pct"] != "N/A" and stock["volume_change_pct"] > 50:
+            comment += "放量下跌，资金出逃明显"
+        elif stock["trend"] == "强势下跌":
+            comment += "处于强势下跌趋势"
+        elif stock["rsi"] != "N/A" and stock["rsi"] < 30:
+            comment += "RSI超卖，可能存在反弹机会"
+        
+        report += f"🔹 {stock['code']} | {stock['name']}\n"
+        report += f"涨跌幅: {stock['change_pct']}% | 换手率: {stock['turnover']}%\n"
+        if comment:
+            report += f"分析: {comment}\n"
+        report += "\n"
+    
+    # 特别关注
+    report += "⚠️ 特别关注\n"
+    
+    if overbought:
+        report += "RSI超买(>70): " + ", ".join([s["code"] for s in overbought]) + "\n"
+    
+    if oversold:
+        report += "RSI超卖(<30): " + ", ".join([s["code"] for s in oversold]) + "\n"
+    
+    if high_volume:
+        report += "成交量翻倍: " + ", ".join([s["code"] for s in high_volume]) + "\n"
+    
+    if high_dividend:
+        report += "高股息(>5%): " + ", ".join([s["code"] for s in high_dividend]) + "\n"
+    
+    report += "\n⚠️ 分析仅供参考，不构成投资建议。"
+    
+    return report
+
+# ------------------
 # 终极防幻觉AI分析
 # ------------------
 def generate_full_report(all_stocks):
@@ -269,16 +354,8 @@ def generate_full_report(all_stocks):
     if ai_result:
         return ai_result
     else:
-        # 终极降级：纯数据报告
-        fallback_report = "📊 港股观察名单报告（AI分析暂时不可用）\n\n"
-        fallback_report += "涨幅前5名：\n"
-        for stock in top_gainers:
-            fallback_report += f"🔹 {stock['code']} | {stock['name']} | {stock['change_pct']}%\n"
-        fallback_report += "\n跌幅前5名：\n"
-        for stock in top_losers:
-            fallback_report += f"🔹 {stock['code']} | {stock['name']} | {stock['change_pct']}%\n"
-        fallback_report += "\n⚠️ AI分析仅供参考，不构成投资建议。"
-        return fallback_report
+        # 终极降级：纯Python智能分析报告
+        return generate_python_analysis(all_stocks)
 
 # ------------------
 # Send Telegram
@@ -303,7 +380,7 @@ if __name__ == "__main__":
     print("📥 开始获取股票数据和计算技术指标...")
     all_stocks = get_all_stock_data()
     
-    print("🤖 开始AI分析（带自动重试和模型降级）...")
+    print("🤖 开始分析...")
     report = generate_full_report(all_stocks)
     
     print("📤 发送报告到Telegram...")
